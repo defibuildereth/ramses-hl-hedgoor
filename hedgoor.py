@@ -1,11 +1,11 @@
 import time
-from web3 import Web3
 from hyperliquid.utils import constants
 import utils
 import json
 import subprocess
 import websocket
 import threading
+import requests
 
 # user input
 
@@ -19,7 +19,9 @@ eth = 10**18
 # Global variable to store NFT details
 latest_zro_price = None
 latest_eth_price = None
+max_eth_exposure = None
 nft_details = None
+
 
 def trade(coin, is_buy, sz):
     address, info, exchange = utils.setup(
@@ -38,6 +40,47 @@ def trade(coin, is_buy, sz):
             except KeyError:
                 print(f'Error: {status["error"]}')
 
+def get_user_positions(user_address):
+    url = "https://api.hyperliquid.xyz/info"
+    headers = {
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "type": "clearinghouseState",
+        "user": user_address
+    }
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+        positions = {}
+        for asset_position in data.get("assetPositions", []):
+            position = asset_position.get("position", {})
+            coin = position.get("coin")
+            if coin:
+                positions[coin] = {
+                    "size": float(position.get("szi", 0)),
+                    "entry_price": float(position.get("entryPx", 0)),
+                    "liquidation_price": float(position.get("liquidationPx", 0)),
+                    "unrealized_pnl": float(position.get("unrealizedPnl", 0)),
+                    "leverage": position.get("leverage", {}).get("value", 0),
+                    "position_value": float(position.get("positionValue", 0)),
+                }
+
+        return {
+            "positions": positions,
+            "account_value": float(data.get("marginSummary", {}).get("accountValue", 0)),
+            "total_margin_used": float(data.get("marginSummary", {}).get("totalMarginUsed", 0)),
+            "total_notional_position": float(data.get("marginSummary", {}).get("totalNtlPos", 0)),
+            "withdrawable": float(data.get("withdrawable", 0))
+        }
+
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred: {e}")
+        return None
+
 
 def on_message(ws, message):
     global latest_zro_price, latest_eth_price
@@ -46,8 +89,10 @@ def on_message(ws, message):
         mids = data.get('data', {}).get('mids', {})
         latest_zro_price = mids.get('ZRO')
         latest_eth_price = mids.get('ETH')
-        if latest_zro_price and latest_eth_price:
-            print(f"ZRO price: {latest_zro_price}, ETH price: {latest_eth_price}")
+        # if latest_zro_price and latest_eth_price:
+        #     print(
+        #         f"ZRO price: {latest_zro_price}, ETH price: {latest_eth_price}")
+
 
 def on_error(ws, error):
     print(f"Error: {error}")
@@ -111,20 +156,35 @@ def nftDetails(id):
 
 
 def get_nft_details():
-    global nft_details
+    global nft_details, max_eth_exposure
     if nft_details is None:
         id = findNft(userAddress)
         if id:
             nft_details = nftDetails(id)
+            if nft_details:
+                _, max_eth_exposure = calculateTokenAmounts(
+                    1,
+                    nft_details['tickLower'],
+                    nft_details['tickUpper'],
+                    nft_details['liquidity']
+                )
+                print(f"Max ETH exposure: {max_eth_exposure:.6f} WETH")
     return nft_details
 
-def calculateTokenAmounts(zro_eth_ratio, tick_lower, tick_upper, liquidity_hex):
-    liquidity = int(liquidity_hex, 16)
+
+def calculateTokenAmounts(zro_eth_ratio, tick_lower, tick_upper, liquidity_dict):
+    if isinstance(liquidity_dict, dict):
+        liquidity = int(liquidity_dict['hex'], 16)
+    elif isinstance(liquidity_dict, str):
+        liquidity = int(liquidity_dict, 16)
+    else:
+        raise ValueError("liquidity_dict must be either a dictionary or a hex string")
+
     sqrtp_lower = tick_to_sqrtp(tick_lower)
     sqrtp_upper = tick_to_sqrtp(tick_upper)
 
     # Convert ZRO/ETH ratio to sqrtPrice
-    sqrtp_current = int((zro_eth_ratio ** 0.5) * q96)
+    sqrtp_current = int((max(zro_eth_ratio, 1e-18) ** 0.5) * q96)
 
     if sqrtp_current < sqrtp_lower:
         amount0 = calc_amount0(liquidity, sqrtp_lower, sqrtp_upper)
@@ -147,15 +207,18 @@ def calculateTokenAmounts(zro_eth_ratio, tick_lower, tick_upper, liquidity_hex):
 def tick_to_sqrtp(t):
     return int((1.0001 ** (t / 2)) * q96)
 
+
 def calc_amount0(liq, pa, pb):
     if pa > pb:
         pa, pb = pb, pa
     return int(liq * q96 * (pb - pa) / pb / pa)
 
+
 def calc_amount1(liq, pa, pb):
     if pa > pb:
         pa, pb = pb, pa
     return int(liq * (pb - pa) / q96)
+
 
 def calculate_position():
     global latest_zro_price, latest_eth_price, nft_details
@@ -165,10 +228,10 @@ def calculate_position():
             zro_eth_ratio,
             nft_details['tickLower'],
             nft_details['tickUpper'],
-            nft_details['liquidity']['hex']
+            nft_details['liquidity']
         )
-        # print(f"Current position: {zro_amount:.6f} ZRO, {weth_amount:.6f} WETH")
-        # Here you would add logic to determine if hedging is needed
+        positions = get_user_positions(userAddress)
+        print(positions)
     else:
         print("Waiting for price data or NFT details...")
 
@@ -176,6 +239,7 @@ def position_calculator():
     while True:
         calculate_position()
         time.sleep(5)
+
 
 if __name__ == "__main__":
     if get_nft_details():
@@ -192,7 +256,8 @@ if __name__ == "__main__":
     ws.on_open = on_open
 
     # Start the position calculator in a separate thread
-    calculator_thread = threading.Thread(target=position_calculator, daemon=True)
+    calculator_thread = threading.Thread(
+        target=position_calculator, daemon=True)
     calculator_thread.start()
 
     # Main loop to keep the WebSocket connection alive
