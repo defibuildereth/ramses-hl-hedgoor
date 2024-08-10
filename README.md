@@ -16,6 +16,6 @@ This allows the user to harvest incentives on Ramses, while maintaining an expos
 
 ## Requirements
 
-Python + Node
-Alchemy API key (in .env)
-Hyperliquid API key (in config.json)
+Python + Node  
+Alchemy API key (in .env)  
+Hyperliquid API key (in config.json)  

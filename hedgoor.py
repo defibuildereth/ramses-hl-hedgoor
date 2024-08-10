@@ -4,7 +4,8 @@ import subprocess
 import threading
 from hyperliquid.utils import constants
 import helpers 
-import websocket  
+import websocket
+import utils  
 
 # Define thresholds to avoid small trades/overtrading
 zro_hedge_threshold = 250  # Adjust these values as needed
