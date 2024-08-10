@@ -18,4 +18,4 @@ This allows the user to harvest incentives on Ramses, while maintaining an expos
 
 Python + Node  
 Alchemy API key (in .env)  
-Hyperliquid API key (in config.json)  
+[Hyperliquid](https://app.hyperliquid.xyz/join/DEFIBUILDERETH) API key (in config.json)  
